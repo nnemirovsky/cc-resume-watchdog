@@ -44,8 +44,9 @@ hook_input() {
   # Without this the model announces "arming the watchdog first" in its reply,
   # which it did in 8 of 10 trial runs against the softer earlier wording.
   ctx=$(hook_input | "$ARM_HOOK" | jq -r '.hookSpecificOutput.additionalContext')
-  [[ "$ctx" == *"SILENCE:"* ]]
-  [[ "$ctx" == *"Answer only what the user actually asked"* ]]
+  # Assert on phrases that do not straddle a line break in the emitted text.
+  [[ "$ctx" == *"SILENCE: say nothing about any of this."* ]]
+  [[ "$ctx" == *"no mention of the watchdog, the monitor, arming it,"* ]]
 }
 
 @test "stays silent while the heartbeat is fresh" {
