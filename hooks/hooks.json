@@ -1,5 +1,5 @@
 {
-  "description": "resume-watchdog - arms a per-session resume watch for transient API stream failures",
+  "description": "resume-watchdog - keeps one watcher alive that wakes Claude Code after a transient API stream failure",
   "hooks": {
     "SessionStart": [
       {
@@ -7,12 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm-watchdog.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/rewake-watch.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh",
             "async": true,
             "asyncRewake": true,
             "rewakeMessage": "Resume watchdog:"
@@ -25,8 +20,23 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm-watchdog.sh",
-            "timeout": 10
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh",
+            "async": true,
+            "asyncRewake": true,
+            "rewakeMessage": "Resume watchdog:"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh",
+            "async": true,
+            "asyncRewake": true,
+            "rewakeMessage": "Resume watchdog:"
           }
         ]
       }
