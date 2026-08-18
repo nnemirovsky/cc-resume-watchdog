@@ -1,0 +1,28 @@
+{
+  "description": "cc-resume-watchdog — arms a per-session resume watch for transient API stream failures",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm-watchdog.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm-watchdog.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
