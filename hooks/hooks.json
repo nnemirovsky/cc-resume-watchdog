@@ -9,6 +9,13 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm-watchdog.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/rewake-watch.sh",
+            "async": true,
+            "asyncRewake": true,
+            "rewakeMessage": "Resume watchdog:"
           }
         ]
       }

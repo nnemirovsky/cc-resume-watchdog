@@ -18,8 +18,9 @@ hooks/
   hooks.json           # Hook definitions (SessionStart, UserPromptSubmit)
   handlers/
     arm-watchdog.sh    # Emits additionalContext asking the agent to arm the monitor
+    rewake-watch.sh    # SessionStart async+asyncRewake body, execs the watcher
 bin/
-  cc-resume-watch      # The watcher. Run under the Monitor tool, persistent
+  cc-resume-watch      # The watcher. CC_RESUME_MODE picks monitor or rewake
 tests/
   helpers.bash         # Transcript fixture builders and a bounded watcher runner
   arm-watchdog.bats
@@ -34,9 +35,20 @@ assistant message carrying `isApiErrorMessage: true` and `model: "<synthetic>"`,
 the main agent loop returns on it before reaching the Stop hook runner. That is why
 no hook fires.
 
-A background task notification does re-invoke the agent loop after that dead turn.
-`bin/cc-resume-watch` runs under the Monitor tool, so each line it prints becomes
-such a notification.
+Two things do reach the model after that dead turn.
+
+A background task notification re-invokes the agent loop, so `bin/cc-resume-watch`
+under the Monitor tool turns each printed line into a wake-up. That needs the model
+to arm it, so it only covers from the first prompt onward.
+
+An `async` plus `asyncRewake` hook that exits 2 also wakes the model, with the
+process's stderr as the body. No model involvement, so it covers the gap before the
+first prompt, but the rewake fires on process exit so it is one shot.
+
+Verified in this codebase: the gate is `e.async || (e.asyncRewake && K)`, so
+`async: true` backgrounds regardless of interactivity. The rewake does not re-fire
+`UserPromptSubmit`, and Claude Code never reaps the detached process, which is why
+the watcher follows its owner pid and exits with it.
 
 Hooks cannot call tools, so `arm-watchdog.sh` cannot arm the monitor. It returns
 `hookSpecificOutput.additionalContext` with the call already filled in. The watcher

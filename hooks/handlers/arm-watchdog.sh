@@ -25,6 +25,7 @@ event=$(printf '%s' "$input" | jq -r '.hook_event_name // "SessionStart"' 2>/dev
 state_dir="${CC_RESUME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/resume-watchdog}"
 hb_max_age="${CC_RESUME_HB_MAX_AGE:-90}"
 hb="$state_dir/$session_id.hb"
+ledger="$state_dir/$session_id.resumed"
 mkdir -p "$state_dir" 2>/dev/null
 
 # mtime_of <file> -> epoch seconds, or 0. GNU stat wants -c %Y, BSD stat wants
@@ -58,7 +59,7 @@ calling it cold fails with InputValidationError. If it is not already available,
 run ToolSearch(\"select:Monitor\") first, then make the call:
 
 Monitor({
-  command: \"CC_RESUME_HEARTBEAT='$hb' '$watch_bin' '$transcript' 25 10 12\",
+  command: \"CC_RESUME_HEARTBEAT='$hb' CC_RESUME_LEDGER='$ledger' '$watch_bin' '$transcript' 25 10 12\",
   description: \"auto-resume watch (transient API stream failures)\",
   persistent: true,
   timeout_ms: 3600000

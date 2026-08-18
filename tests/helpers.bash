@@ -69,3 +69,10 @@ run_watch() {
 TRANSIENT_TEXT="API Error: Connection lost mid-response. The response above may be incomplete."
 CREDITS_TEXT="You're out of usage credits. Run /usage-credits to keep using Fable 5 or /model to switch models."
 export TRANSIENT_TEXT CREDITS_TEXT
+
+# run_rewake <transcript> <grace> [ledger] -> prints stderr, returns the exit code
+run_rewake() {
+  local transcript="$1" grace="$2" ledger="${3:-}"
+  CC_RESUME_MODE=rewake CC_RESUME_LEDGER="$ledger" \
+    "$WATCH_BIN" "$transcript" "$grace" 1 1 2>&1
+}

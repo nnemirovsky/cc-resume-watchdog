@@ -3,14 +3,29 @@
 # by a *transient* API/stream failure and nothing continues it.
 #
 # Usage: cc-resume-watch <transcript.jsonl> [grace_secs] [poll_secs] [max_per_hour]
-# Env:   CC_RESUME_HEARTBEAT=<path>   touched every poll, so the arming hook can
-#                                     tell whether this session is already covered.
-#        CC_RESUME_WINDOW=<secs>      rate-limit window. Default 3600.
 #
-# Run this under the Monitor tool with persistent:true. Every stdout line becomes
-# a task-notification, and a task-notification re-invokes the agent loop, the only
-# in-process channel that survives an api_error turn end. Stop hooks do not fire:
-# the main loop returns {reason:"api_error"} before it reaches the Stop-hook runner.
+# Env:
+#   CC_RESUME_MODE=monitor|rewake   monitor (default) prints every hit and keeps
+#                                   running. rewake prints one hit to stderr and
+#                                   exits 2, which is what an asyncRewake hook
+#                                   needs to wake the model.
+#   CC_RESUME_HEARTBEAT=<path>      touched every poll, so the arming hook can
+#                                   tell whether this session is already covered.
+#   CC_RESUME_LEDGER=<path>         uuids already resumed, shared between the two
+#                                   modes so a drop is never resumed twice.
+#   CC_RESUME_WINDOW=<secs>         rate-limit window. Default 3600.
+#   CC_RESUME_OWNER_PID=<pid>       Claude Code's pid. The watcher exits once it
+#                                   dies. Resolved from the session files when
+#                                   unset.
+#
+# Two delivery paths, same detection:
+#   monitor  run under the Monitor tool, persistent. Each stdout line becomes a
+#            task-notification, which re-invokes the agent loop. Unlimited hits,
+#            but the model has to arm it, so it only covers from the first prompt.
+#   rewake   run from a SessionStart hook with async+asyncRewake. Exit 2 makes
+#            Claude Code wake the model with this process's stderr. Armed with no
+#            model involvement, so it covers the gap before the first prompt, but
+#            the rewake fires on process exit so it is good for one hit.
 
 set -uo pipefail
 
@@ -18,8 +33,11 @@ TRANSCRIPT="${1:?usage: cc-resume-watch <transcript.jsonl> [grace] [poll] [max_p
 GRACE="${2:-25}"
 POLL="${3:-10}"
 MAX_PER_HOUR="${4:-12}"
+MODE="${CC_RESUME_MODE:-monitor}"
 HEARTBEAT="${CC_RESUME_HEARTBEAT:-}"
+LEDGER="${CC_RESUME_LEDGER:-}"
 WINDOW="${CC_RESUME_WINDOW:-3600}"
+OWNER_PID="${CC_RESUME_OWNER_PID:-}"
 
 # Safe to auto-resume: the stream died, nothing is wrong with the request or the
 # account. Anything not listed here, such as out of credits, session limit, /login,
@@ -51,11 +69,48 @@ epoch_of() {
   esac
 }
 
+# resolve_owner_pid - find the Claude Code process that owns this transcript, by
+# matching the session id in the filename against the session registry. Returns
+# empty when it cannot be determined, in which case no parent check happens.
+resolve_owner_pid() {
+  local sid f
+  sid=$(basename "$TRANSCRIPT" .jsonl)
+  for f in "$HOME"/.claude/sessions/*.json; do
+    [ -f "$f" ] || continue
+    if [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$sid" ]; then
+      jq -r '.pid // empty' "$f" 2>/dev/null
+      return
+    fi
+  done
+}
+
+# ledger_has / ledger_add - a drop must never be resumed twice, and the two modes
+# run as separate processes, so the record has to live on disk.
+ledger_has() {
+  [ -n "$LEDGER" ] || return 1
+  [ -f "$LEDGER" ] || return 1
+  grep -qxF "$1" "$LEDGER" 2>/dev/null
+}
+ledger_add() {
+  [ -n "$LEDGER" ] || return 0
+  mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
+  printf '%s\n' "$1" >> "$LEDGER"
+}
+
+[ -z "$OWNER_PID" ] && OWNER_PID=$(resolve_owner_pid)
+case "$OWNER_PID" in *[!0-9]*) OWNER_PID="" ;; esac
+
 last_uuid=""
 emissions=""       # space separated epochs, pruned to the rate-limit window
 throttled=0
 
 while :; do
+  # Claude Code never reaps a detached async hook, so without this the watcher
+  # outlives the session it was watching and polls a transcript nobody reads.
+  if [ -n "$OWNER_PID" ] && ! kill -0 "$OWNER_PID" 2>/dev/null; then
+    exit 0
+  fi
+
   if [ -n "$HEARTBEAT" ]; then
     mkdir -p "$(dirname "$HEARTBEAT")" 2>/dev/null
     : > "$HEARTBEAT"
@@ -73,11 +128,21 @@ while :; do
       uuid=${hit%%$'\t'*}; rest=${hit#*$'\t'}
       ts=${rest%%$'\t'*};  text=${rest#*$'\t'}
 
-      if [ "$uuid" != "$last_uuid" ] && [[ "$text" =~ $TRANSIENT_RE ]]; then
+      if [ "$uuid" != "$last_uuid" ] && [[ "$text" =~ $TRANSIENT_RE ]] && ! ledger_has "$uuid"; then
         err_epoch=$(epoch_of "$ts")
         now_epoch=$(date -u +%s)
 
         if [ "$err_epoch" -gt 0 ] && [ "$(( now_epoch - err_epoch ))" -ge "$GRACE" ]; then
+          msg="RESUME-WATCH: the previous turn was killed $(( now_epoch - err_epoch ))s ago by a transient stream failure (\"${text}\") and nothing has continued it. Pick up exactly where you left off. Re-run only the step that was cut off, do not restart the task, do not re-summarise, and do not ask the user whether to continue."
+
+          if [ "$MODE" = "rewake" ]; then
+            # One shot. The rewake fires when this process exits, so say it on
+            # stderr and go. The Monitor covers everything after this point.
+            ledger_add "$uuid"
+            printf '%s\n' "$msg" >&2
+            exit 2
+          fi
+
           # Drop emissions that have aged out of the window.
           kept=""
           for e in $emissions; do
@@ -100,7 +165,8 @@ while :; do
           else
             throttled=0
             emissions="$emissions $now_epoch"
-            echo "RESUME-WATCH: the previous turn was killed $(( now_epoch - err_epoch ))s ago by a transient stream failure (\"${text}\") and nothing has continued it. Pick up exactly where you left off. Re-run only the step that was cut off, do not restart the task, do not re-summarise, and do not ask the user whether to continue. (resume $(( recent + 1 ))/${MAX_PER_HOUR} in the last $(( WINDOW / 60 ))m)"
+            ledger_add "$uuid"
+            echo "${msg} (resume $(( recent + 1 ))/${MAX_PER_HOUR} in the last $(( WINDOW / 60 ))m)"
             last_uuid="$uuid"
           fi
         fi
