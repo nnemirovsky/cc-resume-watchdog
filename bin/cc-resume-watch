@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# cc-resume-watch — emit a resume instruction when a Claude Code turn is killed
+# by a *transient* API/stream failure and nothing continues it.
+#
+# Usage: cc-resume-watch <transcript.jsonl> [grace_secs] [poll_secs] [max_resumes]
+# Env:   CC_RESUME_HEARTBEAT=<path>   touched every poll, so the arming hook can
+#                                     tell whether this session is already covered.
+#
+# Run this under the Monitor tool with persistent:true. Every stdout line becomes
+# a task-notification, and a task-notification re-invokes the agent loop — the only
+# in-process channel that survives an api_error turn end. Stop hooks do not fire:
+# the main loop returns {reason:"api_error"} before it reaches the Stop-hook runner.
+
+set -uo pipefail
+
+TRANSCRIPT="${1:?usage: cc-resume-watch <transcript.jsonl> [grace] [poll] [max]}"
+GRACE="${2:-25}"
+POLL="${3:-10}"
+MAX="${4:-25}"
+HEARTBEAT="${CC_RESUME_HEARTBEAT:-}"
+
+# Safe to auto-resume: the stream died, nothing is wrong with the request or the
+# account. Anything not listed here — out of credits, session limit, /login,
+# prompt too long, refusals — needs a human and is deliberately ignored.
+TRANSIENT_RE='Connection lost mid-response|Connection closed mid-response|Response stalled mid-stream|The response stopped arriving|Server error mid-response|went to sleep mid-response|Connection lost before a response was produced|The response stalled before a response was produced|Unable to connect to API|Request timed out'
+
+JQ_LAST='
+  [ .[] | select(type == "object") ]
+  | map(select(.type == "assistant" or .type == "user"))
+  | last
+  | select(. != null)
+  | select(.isApiErrorMessage == true)
+  | [ .uuid,
+      ((.timestamp // "")[0:19] + "Z"),
+      ((.message.content | if type == "array" then (.[0].text // "") else (. // "") end)
+       | gsub("\\s+"; " "))
+    ] | @tsv'
+
+epoch_of() {  # ISO8601 Z -> epoch, GNU and BSD date
+  date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null \
+    || date -u -d "$1" +%s 2>/dev/null \
+    || echo 0
+}
+
+last_uuid=""
+resumes=0
+
+while :; do
+  [[ -n "$HEARTBEAT" ]] && { mkdir -p "$(dirname "$HEARTBEAT")" 2>/dev/null; : > "$HEARTBEAT"; }
+
+  if [[ -r "$TRANSCRIPT" ]]; then
+    # progress/system/attachment rows keep being appended after a dead turn, so only
+    # assistant/user entries count as "something continued". A partial final line is
+    # dropped by fromjson? rather than failing the whole parse.
+    hit=$(tail -n 80 "$TRANSCRIPT" 2>/dev/null \
+          | jq -rR 'fromjson? // empty' 2>/dev/null \
+          | jq -rs "$JQ_LAST" 2>/dev/null)
+
+    if [[ -n "$hit" ]]; then
+      uuid=${hit%%$'\t'*}; rest=${hit#*$'\t'}
+      ts=${rest%%$'\t'*};  text=${rest#*$'\t'}
+
+      if [[ "$uuid" != "$last_uuid" && "$text" =~ $TRANSIENT_RE ]]; then
+        err_epoch=$(epoch_of "$ts"); now_epoch=$(date -u +%s)
+        idle=$(( now_epoch - err_epoch ))
+
+        if (( err_epoch > 0 && idle >= GRACE )); then
+          resumes=$(( resumes + 1 ))
+          if (( resumes > MAX )); then
+            echo "RESUME-WATCH: hit the ${MAX}-resume cap for this session; standing down. Last error: ${text}"
+            exit 0
+          fi
+          echo "RESUME-WATCH: the previous turn was killed ${idle}s ago by a transient stream failure (\"${text}\") and nothing has continued it. Pick up exactly where you left off — re-run only the step that was cut off, do not restart the task, do not re-summarise, and do not ask the user whether to continue. (auto-resume ${resumes}/${MAX})"
+          last_uuid="$uuid"
+        fi
+      fi
+    fi
+  fi
+
+  sleep "$POLL"
+done
