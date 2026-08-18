@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking at `cc-resume-watchdog`. This covers the dev loop and how tests
+Thanks for looking at `resume-watchdog`. This covers the dev loop and how tests
 run.
 
 ## Local dev loop

@@ -1,13 +1,13 @@
 {
-  "name": "cc-resume-watchdog",
-  "version": "0.1.1",
+  "name": "resume-watchdog",
+  "version": "0.1.2",
   "description": "Auto-resumes a Claude Code session after a turn is killed by a transient API stream failure, the case no hook fires for",
   "owner": {
     "name": "nnemirovsky"
   },
   "plugins": [
     {
-      "name": "cc-resume-watchdog",
+      "name": "resume-watchdog",
       "source": "./",
       "description": "Auto-resumes a Claude Code session after a turn is killed by a transient API stream failure, the case no hook fires for"
     }
