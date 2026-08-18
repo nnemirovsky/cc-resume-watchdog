@@ -62,8 +62,8 @@ Request timed out
 
 It never resumes anything else. Out of usage credits, session limit reached,
 `Please run /login`, prompt too long and refusals all need a human, and quietly
-retrying those is worse than stalling. It also de-duplicates on message uuid and
-stops after `max` resumes, so an outage cannot turn into a loop.
+retrying those is worse than stalling. Resumes are also de-duplicated on message
+uuid and rate limited, so a tight failure loop cannot run away.
 
 ## Install
 
@@ -78,20 +78,25 @@ so restart Claude Code afterwards.
 ## Tuning
 
 ```
-bin/cc-resume-watch <transcript.jsonl> [grace=25] [poll=10] [max=25]
+bin/cc-resume-watch <transcript.jsonl> [grace=25] [poll=10] [max_per_hour=12]
 ```
 
 * `grace` is how many seconds the error must sit as the last entry before a resume
   fires. Lower recovers faster. Too low and it can fire while Claude Code is still
   finishing up.
 * `poll` is the transcript poll interval in seconds.
-* `max` is the resume cap for one session. The watcher prints a stand-down line and
-  exits once it is passed.
+* `max_per_hour` is a rolling rate limit, not a lifetime budget. A session running
+  for days can absorb hundreds of drops, because a normal one recovers in a try or
+  two and they arrive spread out. What the limit is there for is the other case,
+  where every resume dies again immediately. Once the window is spent the watcher
+  prints one hold-off line and goes quiet until it clears. It never exits, so the
+  session is still covered after the outage passes.
 
 Both scripts read these overrides, which the test suite uses so nothing touches
 real state:
 
 * `CC_RESUME_HEARTBEAT` is the file the watcher touches on every poll.
+* `CC_RESUME_WINDOW` is the rate-limit window in seconds. Default 3600.
 * `CC_RESUME_STATE_DIR` is the hook's state root. Defaults to
   `$XDG_STATE_HOME/cc-resume-watchdog`.
 * `CC_RESUME_HB_MAX_AGE` is how many seconds a heartbeat stays trusted. Default 90.

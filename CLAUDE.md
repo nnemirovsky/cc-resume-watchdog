@@ -50,7 +50,10 @@ heartbeat is fresh, which is what keeps the arming self-healing instead of one-s
   read as "something continued".
 - `TRANSIENT_RE` is an allowlist. Everything not on it stalls the session on
   purpose.
-- Resumes are de-duplicated on message uuid and capped by `max`.
+- Resumes are de-duplicated on message uuid and rate limited to `max_per_hour`
+  inside a rolling `CC_RESUME_WINDOW`. The limit exists to catch a loop where every
+  resume dies again, not to budget a long session. The watcher never exits on its
+  own, it only goes quiet until the window clears.
 
 ## Testing
 

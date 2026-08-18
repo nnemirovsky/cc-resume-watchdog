@@ -12,7 +12,7 @@ setup() {
   run run_watch "$TRANSCRIPT" 5 1 5 3
   [[ "$output" == *"RESUME-WATCH:"* ]]
   [[ "$output" == *"Connection lost mid-response"* ]]
-  [[ "$output" == *"auto-resume 1/5"* ]]
+  [[ "$output" == *"(resume 1/5 in the last 60m)"* ]]
 }
 
 @test "stays silent for a non-transient error that needs a human" {
@@ -57,10 +57,42 @@ setup() {
   [ "$(grep -c 'RESUME-WATCH: the previous turn' <<< "$output")" -eq 1 ]
 }
 
-@test "stands down after the resume cap" {
+@test "holds off when the rate limit is already spent" {
   api_error_entry uuid-10 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
   run run_watch "$TRANSCRIPT" 5 1 0 3
-  [[ "$output" == *"standing down"* ]]
+  [[ "$output" == *"Holding off"* ]]
+  [[ "$output" != *"Pick up exactly where you left off"* ]]
+}
+
+@test "throttles a tight failure loop, then recovers once the window clears" {
+  export CC_RESUME_WINDOW=4
+  api_error_entry loop-1 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  (
+    sleep 2; api_error_entry loop-2 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+    sleep 4; api_error_entry loop-3 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  ) &
+  feeder=$!
+  run run_watch "$TRANSCRIPT" 5 1 1 9
+  kill "$feeder" 2>/dev/null || true
+  wait "$feeder" 2>/dev/null || true
+  # one resume, then a hold-off for the burst, then a resume again once the
+  # window aged out. The watcher must never exit on its own.
+  [ "$(grep -c 'the previous turn was killed' <<< "$output")" -ge 2 ]
+  [[ "$output" == *"Holding off"* ]]
+}
+
+@test "does not repeat the hold-off notice while it stays throttled" {
+  export CC_RESUME_WINDOW=600
+  api_error_entry hold-1 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  (
+    sleep 2; api_error_entry hold-2 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+    sleep 2; api_error_entry hold-3 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  ) &
+  feeder=$!
+  run run_watch "$TRANSCRIPT" 5 1 0 6
+  kill "$feeder" 2>/dev/null || true
+  wait "$feeder" 2>/dev/null || true
+  [ "$(grep -c 'Holding off' <<< "$output")" -eq 1 ]
 }
 
 @test "tolerates a half-written final line" {
