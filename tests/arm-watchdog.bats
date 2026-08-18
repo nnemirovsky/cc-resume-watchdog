@@ -32,6 +32,22 @@ hook_input() {
   [[ "$ctx" == *"persistent: true"* ]]
 }
 
+@test "tells the model to load Monitor before calling it" {
+  # Monitor is a deferred tool in most sessions. Calling it cold fails with
+  # InputValidationError, so the instruction has to say to load the schema first.
+  ctx=$(hook_input | "$ARM_HOOK" | jq -r '.hookSpecificOutput.additionalContext')
+  [[ "$ctx" == *'ToolSearch("select:Monitor")'* ]]
+  [[ "$ctx" == *"deferred tool"* ]]
+}
+
+@test "tells the model not to narrate the arming" {
+  # Without this the model announces "arming the watchdog first" in its reply,
+  # which it did in 8 of 10 trial runs against the softer earlier wording.
+  ctx=$(hook_input | "$ARM_HOOK" | jq -r '.hookSpecificOutput.additionalContext')
+  [[ "$ctx" == *"SILENCE:"* ]]
+  [[ "$ctx" == *"Answer only what the user actually asked"* ]]
+}
+
 @test "stays silent while the heartbeat is fresh" {
   mkdir -p "$CC_RESUME_STATE_DIR"
   : > "$CC_RESUME_STATE_DIR/$SESSION_ID.hb"
