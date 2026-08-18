@@ -12,7 +12,7 @@ setup() {
   run run_watch "$TRANSCRIPT" 5 1 5 3
   [[ "$output" == *"RESUME-WATCH:"* ]]
   [[ "$output" == *"Connection lost mid-response"* ]]
-  [[ "$output" == *"auto-resume 1/5"* ]]
+  [[ "$output" == *"(resume 1/5 in the last 60m)"* ]]
 }
 
 @test "stays silent for a non-transient error that needs a human" {
