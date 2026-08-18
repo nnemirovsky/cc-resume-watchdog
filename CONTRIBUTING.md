@@ -33,7 +33,7 @@ bats tests/resume-watch.bats
 
 The suite builds synthetic transcripts in `$BATS_TEST_TMPDIR` and points both
 scripts at a throwaway state directory through `CC_RESUME_STATE_DIR` and
-`CC_RESUME_HEARTBEAT`, so it never reads or writes your real `~/.claude`.
+`CC_RESUME_STATE`, so it never reads or writes your real `~/.claude`.
 
 Lint before opening a PR:
 

@@ -15,12 +15,11 @@ stream failure. Entirely bash based.
   plugin.json          # Plugin metadata and version
   marketplace.json     # Marketplace listing metadata
 hooks/
-  hooks.json           # Hook definitions (SessionStart, UserPromptSubmit)
+  hooks.json           # SessionStart, UserPromptSubmit, PostToolUse. All async+asyncRewake
   handlers/
-    arm-watchdog.sh    # Emits additionalContext asking the agent to arm the monitor
-    rewake-watch.sh    # SessionStart async+asyncRewake body, execs the watcher
+    arm.sh             # Singleton guard, then execs into the watcher
 bin/
-  cc-resume-watch      # The watcher. CC_RESUME_MODE picks monitor or rewake
+  cc-resume-watch      # The watcher. Exits 2 to wake the model
 tests/
   helpers.bash         # Transcript fixture builders and a bounded watcher runner
   arm-watchdog.bats
@@ -35,20 +34,20 @@ assistant message carrying `isApiErrorMessage: true` and `model: "<synthetic>"`,
 the main agent loop returns on it before reaching the Stop hook runner. That is why
 no hook fires.
 
-Two things do reach the model after that dead turn.
+An `async` plus `asyncRewake` hook that exits 2 wakes the model with the process's
+stderr as the body. No model involvement and no tool call, which is the whole
+mechanism here.
 
-A background task notification re-invokes the agent loop, so `bin/cc-resume-watch`
-under the Monitor tool turns each printed line into a wake-up. That needs the model
-to arm it, so it only covers from the first prompt onward.
+Verified against 2.1.234 and 2.1.235:
 
-An `async` plus `asyncRewake` hook that exits 2 also wakes the model, with the
-process's stderr as the body. No model involvement, so it covers the gap before the
-first prompt, but the rewake fires on process exit so it is one shot.
-
-Verified in this codebase: the gate is `e.async || (e.asyncRewake && K)`, so
-`async: true` backgrounds regardless of interactivity. The rewake does not re-fire
-`UserPromptSubmit`, and Claude Code never reaps the detached process, which is why
-the watcher follows its owner pid and exits with it.
+- The gate is `e.async || (e.asyncRewake && K)`, so `async: true` backgrounds
+  regardless of interactivity. Without it a headless run would execute the hook
+  synchronously and wedge.
+- `SessionStart`, `UserPromptSubmit` and `PostToolUse` all honour the rewake.
+- The rewake fires on process *exit*, so a watcher is spent by resuming. That is
+  why three events arm, not one.
+- Claude Code never reaps the detached process, which is why the watcher follows
+  its owner pid out.
 
 Hooks cannot call tools, so `arm-watchdog.sh` cannot arm the monitor. It returns
 `hookSpecificOutput.additionalContext` with the call already filled in. The watcher
@@ -64,8 +63,10 @@ heartbeat is fresh, which is what keeps the arming self-healing instead of one-s
   purpose.
 - Resumes are de-duplicated on message uuid and rate limited to `max_per_hour`
   inside a rolling `CC_RESUME_WINDOW`. The limit exists to catch a loop where every
-  resume dies again, not to budget a long session. The watcher never exits on its
-  own, it only goes quiet until the window clears.
+  resume dies again, not to budget a long session. Both live on disk because a
+  watcher only survives until it resumes once.
+- While throttled the watcher stays up and quiet rather than exiting, so the
+  session is still covered when the window clears.
 
 ## Testing
 

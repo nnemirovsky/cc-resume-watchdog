@@ -31,32 +31,33 @@ re-invokes the agent loop. This plugin rides that channel.
 
 ## How it works
 
-Two watchers, same detection, different delivery.
+One watcher per session, and no tool calls.
 
-**The rewake watcher** starts at `SessionStart` as an `async` plus `asyncRewake`
-hook, with no model involvement at all. On the first transient failure it writes
-the resume instruction to stderr and exits 2, and Claude Code turns that into a
-wake-up for the model. This is what covers the window before you have typed
-anything, including on a resumed session. It is good for one hit, because the
-rewake fires when the process exits.
+`SessionStart`, `UserPromptSubmit` and `PostToolUse` all run the same arming hook,
+declared `async` plus `asyncRewake`. When a watcher is already up the hook exits in
+a stat and a signal check. When none is up, the hook process becomes the watcher
+via `exec`, so the pid it recorded stays valid.
 
-**The monitor** covers everything after that. The same `SessionStart` hook, plus
-`UserPromptSubmit`, checks a heartbeat file and returns `additionalContext` holding
-the exact `Monitor` call to make, already filled in with this session's transcript
-path. Each line the monitor prints becomes a task notification, which restarts the
-turn. Unlimited hits, rate limited.
+The watcher polls the transcript. When the last conversational entry is a transient
+stream failure that has been sitting for `grace` seconds, it writes the resume
+instruction to stderr and exits 2. Claude Code turns a rewake hook's exit 2 into a
+wake-up for the model, carrying that stderr, and the turn picks up.
 
-The monitor half goes through the model because hooks cannot call tools. The
-heartbeat is what makes it self-healing. If it was never armed, or died, the next
-prompt asks again, and while a watcher is alive the hook costs one `stat` per
-prompt and prints nothing.
+Three events rather than one because the rewake fires on process exit, so every
+resume consumes the watcher. `SessionStart` covers the window before you have typed
+anything, including on a resumed session, and the other two put a fresh watcher
+back within one prompt or one tool call.
 
-The two share a ledger of resumed message uuids, so a single drop is never resumed
-twice.
+Cross-process state, because each watcher is short-lived:
 
-Both watchers resolve the pid of the Claude Code process that owns their transcript
-and exit once it is gone. Claude Code never reaps a detached async hook, so without
-that a watcher outlives the session it was watching.
+* `<session>.pid` is the singleton marker, released on exit if still owned.
+* `<session>.resumed` is the uuid ledger, so one drop is never resumed twice by two
+  generations of watcher.
+* `<session>.fired` is the rate-limit log, so the limit holds across them.
+
+The watcher also resolves the pid of the Claude Code process that owns its
+transcript and exits once that dies. Claude Code never reaps a detached async hook,
+so without that a watcher outlives the session it was watching.
 
 ## What it resumes
 
@@ -94,6 +95,9 @@ so restart Claude Code afterwards.
 bin/cc-resume-watch <transcript.jsonl> [grace=25] [poll=10] [max_per_hour=12]
 ```
 
+The hook passes these through from `CC_RESUME_GRACE`, `CC_RESUME_POLL` and
+`CC_RESUME_MAX`.
+
 * `grace` is how many seconds the error must sit as the last entry before a resume
   fires. Lower recovers faster. Too low and it can fire while Claude Code is still
   finishing up.
@@ -108,10 +112,10 @@ bin/cc-resume-watch <transcript.jsonl> [grace=25] [poll=10] [max_per_hour=12]
 Both scripts read these overrides, which the test suite uses so nothing touches
 real state:
 
-* `CC_RESUME_MODE` is `monitor` (default) or `rewake`.
-* `CC_RESUME_HEARTBEAT` is the file the watcher touches on every poll.
-* `CC_RESUME_LEDGER` is the shared list of resumed uuids.
-* `CC_RESUME_OWNER_PID` is the Claude Code pid to follow. Resolved from the session
+* `CC_RESUME_STATE` is the state file prefix for one session.
+* `CC_RESUME_STATE_DIR` is the hook's state root. Defaults to
+  `$XDG_STATE_HOME/resume-watchdog`.
+* `CC_RESUME_OWNER` is the Claude Code pid to follow. Resolved from the session
   registry when unset.
 * `CC_RESUME_WINDOW` is the rate-limit window in seconds. Default 3600.
 * `CC_RESUME_STATE_DIR` is the hook's state root. Defaults to
@@ -124,10 +128,13 @@ real state:
   design.
 * Subagent turns die the same way and are not covered. A subagent that hits this
   returns null to its caller.
-* The monitor half depends on the model acting on the hook's context. Measured at
-  16/16 over two trials of fresh sessions with an ordinary first prompt, and the
-  `UserPromptSubmit` re-check keeps it eventually consistent. The rewake half needs
-  no model at all.
+* If a resumed turn drops again before it makes its first tool call, nothing is
+  armed for that stretch, because the watcher that resumed it is spent and the next
+  arming event has not happened yet. Narrow, and the next prompt or tool call
+  closes it.
+* `PostToolUse` runs the arming hook on every tool call. In the common case that is
+  a stat and a `kill -0`, and it is backgrounded, so it does not sit on the tool's
+  critical path.
 
 ## Development
 

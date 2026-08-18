@@ -4,147 +4,151 @@ load helpers
 
 setup() {
   TRANSCRIPT="$BATS_TEST_TMPDIR/transcript.jsonl"
-  HB="$BATS_TEST_TMPDIR/session.hb"
+  export CC_RESUME_STATE="$BATS_TEST_TMPDIR/sess"
 }
 
-@test "resumes when a transient stream failure is the last entry" {
-  api_error_entry uuid-1 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 5 3
+@test "asks for a resume when a transient stream failure is the last entry" {
+  api_error_entry u1 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  run watch_hit "$TRANSCRIPT" 5
+  [ "$status" -eq 2 ]
   [[ "$output" == *"RESUME-WATCH:"* ]]
-  [[ "$output" == *"Connection lost mid-response"* ]]
-  [[ "$output" == *"(resume 1/5 in the last 60m)"* ]]
+  [[ "$output" == *"Pick up exactly where you left off"* ]]
+  [[ "$output" == *"(resume 1/12 in the last 60m)"* ]]
 }
 
-@test "stays silent for a non-transient error that needs a human" {
-  api_error_entry uuid-2 120 "$CREDITS_TEXT" > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 5 3
+@test "stays up and quiet for an error that needs a human" {
+  api_error_entry u2 120 "$CREDITS_TEXT" > "$TRANSCRIPT"
+  run watch_quiet "$TRANSCRIPT" 5 3
   [ -z "$output" ]
+  still_alive
 }
 
-@test "stays silent when the last entry is a normal assistant message" {
-  assistant_entry uuid-3 120 "all done" > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 5 3
+@test "stays up and quiet when the last entry is a normal assistant message" {
+  assistant_entry u3 120 "all done" > "$TRANSCRIPT"
+  run watch_quiet "$TRANSCRIPT" 5 3
   [ -z "$output" ]
+  still_alive
 }
 
-@test "stays silent when something already continued after the error" {
-  {
-    api_error_entry uuid-4 300 "$TRANSIENT_TEXT"
-    user_entry uuid-5 120 "continue"
-  } > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 5 3
+@test "stays quiet when something already continued after the error" {
+  { api_error_entry u4 300 "$TRANSIENT_TEXT"; user_entry u5 120 "continue"; } > "$TRANSCRIPT"
+  run watch_quiet "$TRANSCRIPT" 5 3
   [ -z "$output" ]
 }
 
 @test "progress rows after the error do not count as continuation" {
-  {
-    api_error_entry uuid-6 300 "$TRANSIENT_TEXT"
-    progress_entry uuid-7 10
-  } > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 5 3
-  [[ "$output" == *"RESUME-WATCH:"* ]]
+  { api_error_entry u6 300 "$TRANSIENT_TEXT"; progress_entry u7 10; } > "$TRANSCRIPT"
+  run watch_hit "$TRANSCRIPT" 5
+  [ "$status" -eq 2 ]
 }
 
-@test "waits out the grace period before resuming" {
-  api_error_entry uuid-8 1 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 600 1 5 3
+@test "waits out the grace period" {
+  api_error_entry u8 1 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  run watch_quiet "$TRANSCRIPT" 600 3
+  [ -z "$output" ]
+  still_alive
+}
+
+@test "a drop already in the ledger is not resumed again" {
+  api_error_entry u9 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  echo u9 > "$CC_RESUME_STATE.resumed"
+  run watch_quiet "$TRANSCRIPT" 5 3
+  [ -z "$output" ]
+  still_alive
+}
+
+@test "resuming records the uuid so the next watcher skips it" {
+  api_error_entry u10 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  run watch_hit "$TRANSCRIPT" 5
+  [ "$status" -eq 2 ]
+  grep -qxF u10 "$CC_RESUME_STATE.resumed"
+}
+
+@test "the rate limit carries across watcher generations" {
+  # Each resume kills its watcher, so the count has to live on disk.
+  now=$(now_epoch)
+  for _ in $(seq 1 12); do echo "$now" >> "$CC_RESUME_STATE.fired"; done
+  api_error_entry u11 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  run watch_quiet "$TRANSCRIPT" 5 3
+  [ -z "$output" ]
+  still_alive
+}
+
+@test "the rate limit forgets fires older than the window" {
+  old=$(( $(now_epoch) - 7200 ))
+  for _ in $(seq 1 12); do echo "$old" >> "$CC_RESUME_STATE.fired"; done
+  api_error_entry u12 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  run watch_hit "$TRANSCRIPT" 5
+  [ "$status" -eq 2 ]
+}
+
+@test "the watcher exits when the session that owns it is gone" {
+  assistant_entry u13 120 "idle" > "$TRANSCRIPT"
+  dead=$(bash -c 'echo $$')
+  run env CC_RESUME_OWNER="$dead" "$WATCH_BIN" "$TRANSCRIPT" 5 1 12
+  [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-@test "resumes a given error only once" {
-  api_error_entry uuid-9 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 5 5
-  [ "$(grep -c 'RESUME-WATCH: the previous turn' <<< "$output")" -eq 1 ]
+@test "the watcher stays up while its session is alive" {
+  assistant_entry u14 120 "idle" > "$TRANSCRIPT"
+  CC_RESUME_OWNER=$$ run watch_quiet "$TRANSCRIPT" 5 3
+  [ -z "$output" ]
+  still_alive
 }
 
-@test "holds off when the rate limit is already spent" {
-  api_error_entry uuid-10 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 0 3
-  [[ "$output" == *"Holding off"* ]]
-  [[ "$output" != *"Pick up exactly where you left off"* ]]
-}
-
-@test "throttles a tight failure loop, then recovers once the window clears" {
-  export CC_RESUME_WINDOW=4
-  api_error_entry loop-1 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  (
-    sleep 2; api_error_entry loop-2 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-    sleep 4; api_error_entry loop-3 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  ) &
-  feeder=$!
-  run run_watch "$TRANSCRIPT" 5 1 1 9
-  kill "$feeder" 2>/dev/null || true
-  wait "$feeder" 2>/dev/null || true
-  # one resume, then a hold-off for the burst, then a resume again once the
-  # window aged out. The watcher must never exit on its own.
-  [ "$(grep -c 'the previous turn was killed' <<< "$output")" -ge 2 ]
-  [[ "$output" == *"Holding off"* ]]
-}
-
-@test "does not repeat the hold-off notice while it stays throttled" {
-  export CC_RESUME_WINDOW=600
-  api_error_entry hold-1 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  (
-    sleep 2; api_error_entry hold-2 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-    sleep 2; api_error_entry hold-3 60 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
-  ) &
-  feeder=$!
-  run run_watch "$TRANSCRIPT" 5 1 0 6
-  kill "$feeder" 2>/dev/null || true
-  wait "$feeder" 2>/dev/null || true
-  [ "$(grep -c 'Holding off' <<< "$output")" -eq 1 ]
+@test "the watcher releases its pidfile on exit" {
+  assistant_entry u15 120 "idle" > "$TRANSCRIPT"
+  dead=$(bash -c 'echo $$')
+  echo $$ > "$CC_RESUME_STATE.pid"
+  run env CC_RESUME_OWNER="$dead" "$WATCH_BIN" "$TRANSCRIPT" 5 1 12
+  # the pidfile named a different pid, so it must be left alone
+  [ -f "$CC_RESUME_STATE.pid" ]
 }
 
 @test "tolerates a half-written final line" {
-  api_error_entry uuid-11 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  api_error_entry u16 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
   printf '{"type":"assistant","uuid":"trunc' >> "$TRANSCRIPT"
-  run run_watch "$TRANSCRIPT" 5 1 5 3
-  [[ "$output" == *"RESUME-WATCH:"* ]]
+  run watch_hit "$TRANSCRIPT" 5
+  [ "$status" -eq 2 ]
 }
 
 @test "tolerates a missing transcript without dying" {
-  run run_watch "$BATS_TEST_TMPDIR/does-not-exist.jsonl" 5 1 5 3
+  run watch_quiet "$BATS_TEST_TMPDIR/nope.jsonl" 5 3
   [ -z "$output" ]
-}
-
-@test "writes a heartbeat when one is requested" {
-  assistant_entry uuid-12 120 "idle" > "$TRANSCRIPT"
-  run_watch "$TRANSCRIPT" 5 1 5 3 "$HB" > /dev/null
-  [ -f "$HB" ]
+  still_alive
 }
 
 @test "resumes every transient variant" {
-  local texts=(
-    "API Error: Connection closed mid-response. The response above may be incomplete."
-    "API Error: Response stalled mid-stream. The response above may be incomplete."
-    "API Error: The response stopped arriving. The response above may be incomplete."
-    "API Error: Server error mid-response. The response above may be incomplete."
-    "API Error: Your computer went to sleep mid-response. The response above may be incomplete."
-    "API Error: Unable to connect to API (ECONNRESET)"
-    "Request timed out"
-  )
   local i=0
-  for t in "${texts[@]}"; do
+  for t in \
+    "API Error: Connection closed mid-response. The response above may be incomplete." \
+    "API Error: Response stalled mid-stream. The response above may be incomplete." \
+    "API Error: The response stopped arriving. The response above may be incomplete." \
+    "API Error: Server error mid-response. The response above may be incomplete." \
+    "API Error: Your computer went to sleep mid-response. The response above may be incomplete." \
+    "API Error: Unable to connect to API (ECONNRESET)" \
+    "Request timed out"
+  do
     i=$(( i + 1 ))
+    export CC_RESUME_STATE="$BATS_TEST_TMPDIR/variant-$i"
     api_error_entry "variant-$i" 120 "$t" > "$TRANSCRIPT"
-    run run_watch "$TRANSCRIPT" 5 1 5 3
-    [[ "$output" == *"RESUME-WATCH:"* ]] || {
-      echo "no resume for variant: $t"; return 1
-    }
+    run watch_hit "$TRANSCRIPT" 5
+    [ "$status" -eq 2 ] || { echo "no resume for: $t"; return 1; }
   done
 }
 
-@test "ignores the other errors that need a human" {
-  local texts=(
-    "You've hit your session limit · resets 2am (Asia/Makassar)"
-    "Not logged in · Please run /login"
-    "Prompt is too long"
-  )
+@test "ignores the errors that need a human" {
   local i=0
-  for t in "${texts[@]}"; do
+  for t in \
+    "You've hit your session limit, resets 2am" \
+    "Not logged in. Please run /login" \
+    "Prompt is too long"
+  do
     i=$(( i + 1 ))
+    export CC_RESUME_STATE="$BATS_TEST_TMPDIR/human-$i"
     api_error_entry "human-$i" 120 "$t" > "$TRANSCRIPT"
-    run run_watch "$TRANSCRIPT" 5 1 5 3
+    run watch_quiet "$TRANSCRIPT" 5 2
     [ -z "$output" ] || { echo "unexpected resume for: $t"; return 1; }
   done
 }
