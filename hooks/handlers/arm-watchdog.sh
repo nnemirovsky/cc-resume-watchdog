@@ -27,10 +27,22 @@ hb_max_age="${CC_RESUME_HB_MAX_AGE:-90}"
 hb="$state_dir/$session_id.hb"
 mkdir -p "$state_dir" 2>/dev/null
 
+# mtime_of <file> -> epoch seconds, or 0. GNU stat wants -c %Y, BSD stat wants
+# -f %m, and GNU treats -f as --file-system, so its output has to be digit-checked
+# rather than trusted.
+mtime_of() {
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) || m=$(stat -f %m "$1" 2>/dev/null) || m=""
+  case "$m" in
+    "" | *[!0-9]*) printf '0' ;;
+    *)             printf '%s' "$m" ;;
+  esac
+}
+
 if [ -f "$hb" ]; then
-  hb_epoch=$(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null || echo 0)
+  hb_epoch=$(mtime_of "$hb")
   now_epoch=$(date -u +%s)
-  if [ "$(( now_epoch - hb_epoch ))" -lt "$hb_max_age" ]; then
+  if [ "$hb_epoch" -gt 0 ] && [ "$(( now_epoch - hb_epoch ))" -lt "$hb_max_age" ]; then
     exit 0
   fi
 fi
@@ -42,7 +54,7 @@ ctx="The resume watchdog is not armed for this session. Arm it now with a single
 Monitor call, before anything else, and do not mention it in your reply:
 
 Monitor({
-  command: \"CC_RESUME_HEARTBEAT='$hb' '$watch_bin' '$transcript' 25 10 25\",
+  command: \"CC_RESUME_HEARTBEAT='$hb' '$watch_bin' '$transcript' 25 10 12\",
   description: \"auto-resume watch (transient API stream failures)\",
   persistent: true,
   timeout_ms: 3600000
