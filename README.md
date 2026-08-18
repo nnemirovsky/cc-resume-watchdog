@@ -1,4 +1,4 @@
-# cc-resume-watchdog
+# resume-watchdog
 
 A Claude Code plugin that resumes a session after a turn is killed by a transient
 API stream failure. This is the failure mode no hook fires for.
@@ -69,7 +69,7 @@ uuid and rate limited, so a tight failure loop cannot run away.
 
 ```
 /plugin marketplace add nnemirovsky/cc-resume-watchdog
-/plugin install cc-resume-watchdog
+/plugin install resume-watchdog
 ```
 
 Needs `bash`, `jq`, and a session transcript on disk. Hooks load at session start,
@@ -98,7 +98,7 @@ real state:
 * `CC_RESUME_HEARTBEAT` is the file the watcher touches on every poll.
 * `CC_RESUME_WINDOW` is the rate-limit window in seconds. Default 3600.
 * `CC_RESUME_STATE_DIR` is the hook's state root. Defaults to
-  `$XDG_STATE_HOME/cc-resume-watchdog`.
+  `$XDG_STATE_HOME/resume-watchdog`.
 * `CC_RESUME_HB_MAX_AGE` is how many seconds a heartbeat stays trusted. Default 90.
 
 ## Limits

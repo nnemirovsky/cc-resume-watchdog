@@ -1,4 +1,4 @@
-# cc-resume-watchdog
+# resume-watchdog
 
 Claude Code plugin that resumes a session when a turn is killed by a transient API
 stream failure. Entirely bash based.

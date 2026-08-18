@@ -1,5 +1,5 @@
 {
-  "description": "cc-resume-watchdog — arms a per-session resume watch for transient API stream failures",
+  "description": "resume-watchdog - arms a per-session resume watch for transient API stream failures",
   "hooks": {
     "SessionStart": [
       {

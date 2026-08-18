@@ -8,7 +8,7 @@
 # silent, so the steady-state cost is one stat per prompt.
 #
 # Env overrides (used by the bats suite so tests never touch real state):
-#   CC_RESUME_STATE_DIR   state root. Default $XDG_STATE_HOME/cc-resume-watchdog
+#   CC_RESUME_STATE_DIR   state root. Default $XDG_STATE_HOME/resume-watchdog
 #   CC_RESUME_HB_MAX_AGE  seconds a heartbeat stays trusted. Default 90
 
 set -uo pipefail
@@ -22,7 +22,7 @@ event=$(printf '%s' "$input" | jq -r '.hook_event_name // "SessionStart"' 2>/dev
 [ -z "$session_id" ] && exit 0
 [ -z "$transcript" ] && exit 0
 
-state_dir="${CC_RESUME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/cc-resume-watchdog}"
+state_dir="${CC_RESUME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/resume-watchdog}"
 hb_max_age="${CC_RESUME_HB_MAX_AGE:-90}"
 hb="$state_dir/$session_id.hb"
 mkdir -p "$state_dir" 2>/dev/null
