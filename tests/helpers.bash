@@ -41,6 +41,7 @@ progress_entry() {
 # Prints stderr, returns the watcher's exit code (2 means it asked for a resume).
 watch_hit() {
   local transcript="$1" grace="$2"
+  CC_RESUME_OWNER="${CC_RESUME_OWNER:-$$}" \
   CC_RESUME_STATE="${CC_RESUME_STATE:-}" "$WATCH_BIN" "$transcript" "$grace" 1 "${CC_RESUME_MAX:-12}" 2>&1
 }
 
@@ -49,6 +50,9 @@ watch_hit() {
 watch_quiet() {
   local transcript="$1" grace="$2" secs="$3" out="$BATS_TEST_TMPDIR/quiet.out"
   : > "$out"
+  # Model a live session: without an owner the watcher checks its parent, and a
+  # backgrounded bats subshell can exit straight away and look like an orphan.
+  CC_RESUME_OWNER="${CC_RESUME_OWNER:-$$}" \
   CC_RESUME_STATE="${CC_RESUME_STATE:-}" "$WATCH_BIN" "$transcript" "$grace" 1 "${CC_RESUME_MAX:-12}" > "$out" 2>&1 &
   local pid=$!
   sleep "$secs"

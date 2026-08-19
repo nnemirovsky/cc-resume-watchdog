@@ -7,6 +7,11 @@ setup() {
   export CC_RESUME_STATE="$BATS_TEST_TMPDIR/sess"
 }
 
+teardown() {
+  pkill -f "cc-resume-watch $TRANSCRIPT" 2>/dev/null
+  return 0
+}
+
 @test "asks for a resume when a transient stream failure is the last entry" {
   api_error_entry u1 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
   run watch_hit "$TRANSCRIPT" 5
@@ -151,4 +156,24 @@ setup() {
     run watch_quiet "$TRANSCRIPT" 5 2
     [ -z "$output" ] || { echo "unexpected resume for: $t"; return 1; }
   done
+}
+
+@test "a watcher with no resolvable owner and no live parent stands down" {
+  # The registry is not always there: a short-lived session can be gone before the
+  # watcher ever looks. Without this the watcher polls forever, which is the leak
+  # the whole owner check exists to prevent. Observed live on a real orphan.
+  assistant_entry u17 120 "idle" > "$TRANSCRIPT"
+  bash -c "'$WATCH_BIN' '$TRANSCRIPT' 5 1 12 >/dev/null 2>&1 & echo \$! > '$BATS_TEST_TMPDIR/wpid'"
+  sleep 1
+  wpid=$(cat "$BATS_TEST_TMPDIR/wpid")
+  sleep 4
+  run kill -0 "$wpid"
+  [ "$status" -ne 0 ]
+}
+
+@test "an explicit owner still wins over the parent check" {
+  assistant_entry u18 120 "idle" > "$TRANSCRIPT"
+  CC_RESUME_OWNER=$$ run watch_quiet "$TRANSCRIPT" 5 3
+  [ -z "$output" ]
+  still_alive
 }
