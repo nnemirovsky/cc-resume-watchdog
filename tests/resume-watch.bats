@@ -102,13 +102,54 @@ teardown() {
   still_alive
 }
 
-@test "the watcher releases its pidfile on exit" {
-  assistant_entry u15 120 "idle" > "$TRANSCRIPT"
+@test "the watcher releases its own pidfile when it exits" {
+  # The weaker version of this only checked a foreign pidfile was left alone, so it
+  # kept passing after release_pidfile was accidentally deleted.
+  api_error_entry u15 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  # exec keeps the pid, so the pidfile names the watcher itself. Exit 2 is the
+  # resume, so it has to be captured rather than tripping the test.
+  run bash -c "echo \$\$ > '$CC_RESUME_STATE.pid'; exec '$WATCH_BIN' '$TRANSCRIPT' 5 1 12"
+  [ "$status" -eq 2 ]
+  [ ! -f "$CC_RESUME_STATE.pid" ]
+}
+
+@test "the watcher leaves a pidfile that belongs to someone else alone" {
+  assistant_entry u15b 120 "idle" > "$TRANSCRIPT"
   dead=$(bash -c 'echo $$')
-  echo $$ > "$CC_RESUME_STATE.pid"
+  echo 999999 > "$CC_RESUME_STATE.pid"
   run env CC_RESUME_OWNER="$dead" "$WATCH_BIN" "$TRANSCRIPT" 5 1 12
-  # the pidfile named a different pid, so it must be left alone
   [ -f "$CC_RESUME_STATE.pid" ]
+  [ "$(cat "$CC_RESUME_STATE.pid")" = "999999" ]
+}
+
+@test "every exit path records why" {
+  # A watcher died mid-session and left nothing to diagnose it with.
+  api_error_entry u15c 120 "$TRANSIENT_TEXT" > "$TRANSCRIPT"
+  run watch_hit "$TRANSCRIPT" 5
+  [ "$status" -eq 2 ]
+  grep -q "resumed" "$CC_RESUME_STATE.log"
+
+  assistant_entry u15d 120 "idle" > "$TRANSCRIPT"
+  dead=$(bash -c 'echo $$')
+  run env CC_RESUME_OWNER="$dead" CC_RESUME_STATE="$CC_RESUME_STATE" "$WATCH_BIN" "$TRANSCRIPT" 5 1 12
+  grep -q "owner-gone" "$CC_RESUME_STATE.log"
+}
+
+@test "a killed watcher puts a replacement in the field" {
+  # Arming is activity-driven, so an idle session that loses its watcher gets no
+  # replacement until someone types. Dying is the last chance to fix that.
+  assistant_entry u15e 120 "idle" > "$TRANSCRIPT"
+  CC_RESUME_OWNER=$$ CC_RESUME_STATE="$CC_RESUME_STATE" \
+    "$WATCH_BIN" "$TRANSCRIPT" 5 1 12 >/dev/null 2>&1 &
+  first=$!
+  sleep 1
+  kill -TERM "$first"
+  sleep 2
+  run kill -0 "$first"
+  [ "$status" -ne 0 ]                                   # the original is gone
+  n=$(pgrep -f "cc-resume-watch $TRANSCRIPT" | grep -c . || true)
+  [ "$n" -eq 1 ]                                        # and exactly one took over
+  grep -q "signal-TERM" "$CC_RESUME_STATE.log"
 }
 
 @test "tolerates a half-written final line" {

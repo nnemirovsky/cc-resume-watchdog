@@ -7,7 +7,7 @@
 # Env:
 #   CC_RESUME_STATE  state file prefix. <prefix>.resumed is the uuid ledger,
 #                    <prefix>.fired the rate-limit log, <prefix>.pid the singleton
-#                    marker this process owns.
+#                    marker this process owns, <prefix>.log why watchers exited.
 #   CC_RESUME_WINDOW rate-limit window in seconds. Default 3600.
 #   CC_RESUME_OWNER  Claude Code's pid. The watcher exits once it dies. Resolved
 #                    from the session registry when unset, and if the registry has
@@ -35,6 +35,7 @@ OWNER="${CC_RESUME_OWNER:-}"
 LEDGER="${STATE:+$STATE.resumed}"
 FIRED="${STATE:+$STATE.fired}"
 PIDFILE="${STATE:+$STATE.pid}"
+EXITLOG="${STATE:+$STATE.log}"
 
 # Safe to auto-resume: the stream died, nothing is wrong with the request or the
 # account. Anything not listed here, such as out of credits, session limit, /login,
@@ -84,6 +85,9 @@ resolve_owner() {
 # so at this point the parent is the Claude Code process itself.
 START_PPID=$PPID
 
+# Resolved before anything can chdir, so a replacement can be spawned later.
+SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+
 [ -z "$OWNER" ] && OWNER=$(resolve_owner)
 case "$OWNER" in *[!0-9]*) OWNER="" ;; esac
 
@@ -120,6 +124,51 @@ owner_gone() {
   return 1
 }
 
+# A watcher that dies quietly leaves the session uncovered, and every arming event
+# is activity-driven, so an idle session gets no replacement until someone types.
+# One was seen dying mid-session with no way to tell why, so record the reason.
+log_exit() {
+  [ -n "$EXITLOG" ] || return 0
+  mkdir -p "$(dirname "$EXITLOG")" 2>/dev/null
+  printf '%s %s pid=%s owner=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$$" "${OWNER:-none}" >> "$EXITLOG"
+  return 0
+}
+
+# Drop the singleton marker only if it is still ours. A later generation may have
+# claimed it after we lost a race, and stealing it back would let two watchers run.
+release_pidfile() {
+  [ -n "$PIDFILE" ] || return 0
+  if [ "$(head -1 "$PIDFILE" 2>/dev/null)" = "$$" ]; then
+    rm -f "$PIDFILE"
+  fi
+  return 0
+}
+
+# Put a replacement in the field before going. Only for deaths that are neither the
+# session ending nor a resume: respawning on owner-gone would recreate the very leak
+# the owner check exists to close. The owner is passed explicitly because the
+# replacement is reparented to init the moment we exit, so it cannot use the parent
+# fallback to work out what it belongs to.
+respawn() {
+  [ -n "$OWNER" ] || return 0
+  kill -0 "$OWNER" 2>/dev/null || return 0
+  release_pidfile
+  CC_RESUME_OWNER="$OWNER" CC_RESUME_STATE="$STATE" CC_RESUME_WINDOW="$WINDOW" \
+    nohup "$SELF" "$TRANSCRIPT" "$GRACE" "$POLL" "$MAX_PER_HOUR" >/dev/null 2>&1 &
+  return 0
+}
+
+on_signal() {
+  log_exit "signal-$1"
+  respawn
+  exit 0
+}
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP'  HUP
+trap 'on_signal INT'  INT
+trap release_pidfile EXIT
+
 # recent_fires - how many resumes are still inside the rate-limit window, pruning
 # the log as a side effect so it cannot grow without bound. On disk because a
 # watcher only lives until it resumes once, so the count has to outlive it.
@@ -140,6 +189,7 @@ while :; do
   # Claude Code never reaps a detached async hook, so without this the watcher
   # outlives the session it was watching and polls a transcript nobody reads.
   if owner_gone; then
+    log_exit "owner-gone"
     exit 0
   fi
 
@@ -178,6 +228,7 @@ while :; do
           fi
           [ -n "$FIRED" ] && printf '%s\n' "$now_epoch" >> "$FIRED"
           printf '%s\n' "RESUME-WATCH: the previous turn was killed $(( now_epoch - err_epoch ))s ago by a transient stream failure (\"${text}\") and nothing has continued it. Pick up exactly where you left off. Re-run only the step that was cut off, do not restart the task, do not re-summarise, and do not ask the user whether to continue. (resume $(( n + 1 ))/${MAX_PER_HOUR} in the last $(( WINDOW / 60 ))m)" >&2
+          log_exit "resumed"
           exit 2
         fi
       fi
