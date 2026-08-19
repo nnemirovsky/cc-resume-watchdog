@@ -54,6 +54,7 @@ Cross-process state, because each watcher is short-lived:
 * `<session>.resumed` is the uuid ledger, so one drop is never resumed twice by two
   generations of watcher.
 * `<session>.fired` is the rate-limit log, so the limit holds across them.
+* `<session>.log` records why each watcher exited.
 
 The watcher also resolves the pid of the Claude Code process that owns its
 transcript and exits once that dies. Claude Code never reaps a detached async hook,
@@ -135,6 +136,10 @@ real state:
   design.
 * Subagent turns die the same way and are not covered. A subagent that hits this
   returns null to its caller.
+* Every arming event is activity-driven, so an idle session that loses its watcher
+  gets no replacement until you next type or a tool runs. A watcher that is killed
+  puts a replacement in the field before it goes, which covers the deaths it can
+  see coming. A hard kill is not one of them.
 * If a resumed turn drops again before it makes its first tool call, nothing is
   armed for that stretch, because the watcher that resumed it is spent and the next
   arming event has not happened yet. Narrow, and the next prompt or tool call
