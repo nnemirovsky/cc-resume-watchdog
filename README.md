@@ -59,6 +59,13 @@ The watcher also resolves the pid of the Claude Code process that owns its
 transcript and exits once that dies. Claude Code never reaps a detached async hook,
 so without that a watcher outlives the session it was watching.
 
+The registry is not always available. A watcher armed at `SessionStart` can start
+before the session file is written, and a short-lived session can be gone before the
+watcher ever looks. When there is no owner to resolve, the watcher falls back to its
+parent: a hook-armed watcher is exec'd by Claude Code and keeps it as a parent for
+as long as it lives, so being parented to init means there is nothing left to watch
+for and it stands down.
+
 ## What it resumes
 
 Only failures where the stream died and both the request and the account are fine:
@@ -116,7 +123,7 @@ real state:
 * `CC_RESUME_STATE_DIR` is the hook's state root. Defaults to
   `$XDG_STATE_HOME/resume-watchdog`.
 * `CC_RESUME_OWNER` is the Claude Code pid to follow. Resolved from the session
-  registry when unset.
+  registry when unset, and failing that the watcher follows its own parent.
 * `CC_RESUME_WINDOW` is the rate-limit window in seconds. Default 3600.
 * `CC_RESUME_STATE_DIR` is the hook's state root. Defaults to
   `$XDG_STATE_HOME/resume-watchdog`.

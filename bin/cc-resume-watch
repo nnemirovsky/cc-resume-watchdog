@@ -10,7 +10,8 @@
 #                    marker this process owns.
 #   CC_RESUME_WINDOW rate-limit window in seconds. Default 3600.
 #   CC_RESUME_OWNER  Claude Code's pid. The watcher exits once it dies. Resolved
-#                    from the session registry when unset.
+#                    from the session registry when unset, and if the registry has
+#                    nothing to say, the watcher follows its own parent instead.
 #
 # Run from a hook declared async + asyncRewake. On a hit it writes the resume
 # instruction to stderr and exits 2, and Claude Code turns that into a wake-up
@@ -79,20 +80,49 @@ resolve_owner() {
   done
 }
 
+# Captured before anything else can fork. The arming hook execs into this script,
+# so at this point the parent is the Claude Code process itself.
+START_PPID=$PPID
+
 [ -z "$OWNER" ] && OWNER=$(resolve_owner)
 case "$OWNER" in *[!0-9]*) OWNER="" ;; esac
 
-# Drop the singleton marker only if it is still ours. A later generation may have
-# claimed it after we lost a race, and stealing it back would let two watchers run.
-release_pidfile() {
-  [ -n "$PIDFILE" ] || return 0
-  [ "$(head -1 "$PIDFILE" 2>/dev/null)" = "$$" ] && rm -f "$PIDFILE"
-  return 0
+# owner_gone - has the session this watcher belongs to ended?
+#
+# The registry is the good signal but it is not always there: a watcher armed at
+# SessionStart can start before the session file is written, and a short-lived
+# session can be gone from the registry before the watcher ever looks. A watcher
+# that never resolves an owner used to poll forever, which is exactly the leak this
+# whole mechanism exists to avoid.
+#
+# So when there is no owner, fall back to the parent. A hook-armed watcher is
+# exec'd by Claude Code and keeps it as a parent for as long as it lives, so being
+# parented to init means either the session is already gone or this was never
+# started by a session at all. Either way there is nothing to watch for.
+owner_gone() {
+  if [ -n "$OWNER" ]; then
+    kill -0 "$OWNER" 2>/dev/null && return 1
+    return 0
+  fi
+
+  # The session file may only appear once the session has finished starting up.
+  OWNER=$(resolve_owner)
+  case "$OWNER" in *[!0-9]*) OWNER="" ;; esac
+  [ -n "$OWNER" ] && return 1
+
+  local cur
+  cur=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+  case "$cur" in
+    "" | *[!0-9]*) return 0 ;;
+    1)             return 0 ;;
+  esac
+  [ "$cur" != "$START_PPID" ] && return 0
+  return 1
 }
-trap release_pidfile EXIT
 
 # recent_fires - how many resumes are still inside the rate-limit window, pruning
-# the log as a side effect so it cannot grow without bound.
+# the log as a side effect so it cannot grow without bound. On disk because a
+# watcher only lives until it resumes once, so the count has to outlive it.
 recent_fires() {
   local now kept line n=0
   [ -n "$FIRED" ] || { printf '0'; return; }
@@ -109,7 +139,7 @@ recent_fires() {
 while :; do
   # Claude Code never reaps a detached async hook, so without this the watcher
   # outlives the session it was watching and polls a transcript nobody reads.
-  if [ -n "$OWNER" ] && ! kill -0 "$OWNER" 2>/dev/null; then
+  if owner_gone; then
     exit 0
   fi
 
