@@ -54,6 +54,34 @@ JQ_LAST='
        | gsub("\\s+"; " "))
     ] | @tsv'
 
+# last_error <transcript> -> "uuid<TAB>iso<TAB>text" when the final conversational
+# entry is an api error, empty otherwise. progress/system/attachment rows keep being
+# appended after a dead turn, so only assistant/user entries count as "something
+# continued". A partial final line is dropped by fromjson? rather than failing the
+# whole parse.
+last_error() {
+  [ -r "$1" ] || return 0
+  tail -n 80 "$1" 2>/dev/null \
+    | jq -rR 'fromjson? // empty' 2>/dev/null \
+    | jq -rs "$JQ_LAST" 2>/dev/null
+}
+
+# subagent_transcripts - the children of this session. A live subagent writes to its
+# transcript constantly, so anything touched more recently than the grace window is
+# still working and is skipped without being parsed.
+subagent_transcripts() {
+  local dir now mt f
+  dir="${TRANSCRIPT%.jsonl}/subagents"
+  [ -d "$dir" ] || return 0
+  now=$(date -u +%s)
+  for f in "$dir"/*.jsonl; do
+    [ -f "$f" ] || continue
+    mt=$(stat -c %Y "$f" 2>/dev/null) || mt=$(stat -f %m "$f" 2>/dev/null) || continue
+    case "$mt" in ''|*[!0-9]*) continue ;; esac
+    [ "$(( now - mt ))" -ge "$GRACE" ] && printf '%s\n' "$f"
+  done
+}
+
 # epoch_of <iso8601Z> -> epoch seconds, or 0. BSD date parses with -j -f, GNU
 # date with -d. Whatever comes back is digit-checked before any arithmetic.
 epoch_of() {
@@ -185,6 +213,37 @@ recent_fires() {
   printf '%s' "$n"
 }
 
+# fire <uuid> <message> - record the resume and wake the parent with it. The rewake
+# happens when this process exits, so there is exactly one of these per watcher.
+fire() {
+  if [ -n "$LEDGER" ]; then
+    mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
+    printf '%s\n' "$1" >> "$LEDGER"
+  fi
+  [ -n "$FIRED" ] && printf '%s\n' "$(date -u +%s)" >> "$FIRED"
+  printf '%s\n' "$2" >&2
+  log_exit "resumed"
+  exit 2
+}
+
+# seen <uuid> - already resumed by this or an earlier generation of watcher
+seen() {
+  [ -n "$LEDGER" ] || return 1
+  [ -f "$LEDGER" ] || return 1
+  grep -qxF "$1" "$LEDGER" 2>/dev/null
+}
+
+# stale_enough <iso> -> echoes the age in seconds, or nothing if it is too new or
+# unparseable
+stale_enough() {
+  local e now age
+  e=$(epoch_of "$1")
+  [ "$e" -gt 0 ] || return 1
+  now=$(date -u +%s); age=$(( now - e ))
+  [ "$age" -ge "$GRACE" ] || return 1
+  printf '%s' "$age"
+}
+
 while :; do
   # Claude Code never reaps a detached async hook, so without this the watcher
   # outlives the session it was watching and polls a transcript nobody reads.
@@ -193,47 +252,44 @@ while :; do
     exit 0
   fi
 
-  if [ -r "$TRANSCRIPT" ]; then
-    # progress/system/attachment rows keep being appended after a dead turn, so only
-    # assistant/user entries count as "something continued". A partial final line is
-    # dropped by fromjson? rather than failing the whole parse.
-    hit=$(tail -n 80 "$TRANSCRIPT" 2>/dev/null \
-          | jq -rR 'fromjson? // empty' 2>/dev/null \
-          | jq -rs "$JQ_LAST" 2>/dev/null)
+  n=$(recent_fires)
+  if [ "$n" -ge "$MAX_PER_HOUR" ]; then
+    # A tight failure loop, not the usual one-or-two-tries recovery. Stay up and
+    # quiet: the window will clear and the session may run for days.
+    sleep "$POLL"
+    continue
+  fi
 
-    if [ -n "$hit" ]; then
-      uuid=${hit%%$'\t'*}; rest=${hit#*$'\t'}
-      ts=${rest%%$'\t'*};  text=${rest#*$'\t'}
-
-      already=1
-      if [ -n "$LEDGER" ] && [ -f "$LEDGER" ] && grep -qxF "$uuid" "$LEDGER" 2>/dev/null; then
-        already=0
-      fi
-
-      if [ "$already" -eq 1 ] && [[ "$text" =~ $TRANSIENT_RE ]]; then
-        err_epoch=$(epoch_of "$ts")
-        now_epoch=$(date -u +%s)
-
-        if [ "$err_epoch" -gt 0 ] && [ "$(( now_epoch - err_epoch ))" -ge "$GRACE" ]; then
-          n=$(recent_fires)
-          if [ "$n" -ge "$MAX_PER_HOUR" ]; then
-            # A tight failure loop, not the usual one-or-two-tries recovery. Stay
-            # up and quiet: the window will clear and the session may run for days.
-            sleep "$POLL"
-            continue
-          fi
-          if [ -n "$LEDGER" ]; then
-            mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
-            printf '%s\n' "$uuid" >> "$LEDGER"
-          fi
-          [ -n "$FIRED" ] && printf '%s\n' "$now_epoch" >> "$FIRED"
-          printf '%s\n' "RESUME-WATCH: the previous turn was killed $(( now_epoch - err_epoch ))s ago by a transient stream failure (\"${text}\") and nothing has continued it. Pick up exactly where you left off. Re-run only the step that was cut off, do not restart the task, do not re-summarise, and do not ask the user whether to continue. (resume $(( n + 1 ))/${MAX_PER_HOUR} in the last $(( WINDOW / 60 ))m)" >&2
-          log_exit "resumed"
-          exit 2
-        fi
-      fi
+  # The session's own turn first. A dead main turn matters more than a dead child,
+  # because nothing at all is running while it sits there.
+  hit=$(last_error "$TRANSCRIPT")
+  if [ -n "$hit" ]; then
+    uuid=${hit%%$'\t'*}; rest=${hit#*$'\t'}
+    ts=${rest%%$'\t'*};  text=${rest#*$'\t'}
+    if ! seen "$uuid" && [[ "$text" =~ $TRANSIENT_RE ]] && age=$(stale_enough "$ts"); then
+      fire "$uuid" "RESUME-WATCH: the previous turn was killed ${age}s ago by a transient stream failure (\"${text}\") and nothing has continued it. Pick up exactly where you left off. Re-run only the step that was cut off, do not restart the task, do not re-summarise, and do not ask the user whether to continue. (resume $(( n + 1 ))/${MAX_PER_HOUR} in the last $(( WINDOW / 60 ))m)"
     fi
   fi
+
+  # Then the children. Subagents are launched in the background, so the parent gets
+  # a "launched" result immediately and only learns the outcome later. One that dies
+  # this way never reports back at all, and the parent waits on a result that is
+  # never coming. It cannot be resumed from out here, so say what died instead and
+  # let the parent decide whether the work is still needed.
+  while IFS= read -r sub; do
+    [ -n "$sub" ] || continue
+    shit=$(last_error "$sub")
+    [ -n "$shit" ] || continue
+    suuid=${shit%%$'\t'*}; srest=${shit#*$'\t'}
+    sts=${srest%%$'\t'*};  stext=${srest#*$'\t'}
+    seen "$suuid" && continue
+    [[ "$stext" =~ $TRANSIENT_RE ]] || continue
+    sage=$(stale_enough "$sts") || continue
+    name=$(basename "$sub" .jsonl)
+    fire "$suuid" "RESUME-WATCH: subagent ${name} stopped ${sage}s ago on a transient stream failure (\"${stext}\") and has written nothing since. It was running in the background, so its result is never going to arrive. Decide whether that work is still needed and re-dispatch it if so. Do not assume it finished, and do not wait for it. (resume $(( n + 1 ))/${MAX_PER_HOUR} in the last $(( WINDOW / 60 ))m)"
+  done <<EOF
+$(subagent_transcripts)
+EOF
 
   sleep "$POLL"
 done

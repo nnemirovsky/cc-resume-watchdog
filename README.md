@@ -40,7 +40,16 @@ via `exec`, so the pid it recorded stays valid.
 
 The watcher polls the transcript. When the last conversational entry is a transient
 stream failure that has been sitting for `grace` seconds, it writes the resume
-instruction to stderr and exits 2. Claude Code turns a rewake hook's exit 2 into a
+instruction to stderr and exits 2.
+
+It watches the session's subagents too. Those run in the background, so the parent
+gets a launch confirmation immediately and only learns the outcome later. A subagent
+that dies this way never reports back at all, and the parent sits waiting on a
+result that is not coming. It cannot be resumed from outside the process, so the
+watcher tells the parent which one died and lets it decide whether to re-dispatch.
+A live subagent writes to its transcript constantly, so anything touched inside the
+grace window is skipped without being parsed. The session's own dead turn takes
+priority over a dead child. Claude Code turns a rewake hook's exit 2 into a
 wake-up for the model, carrying that stderr, and the turn picks up.
 
 Three events rather than one because the rewake fires on process exit, so every
