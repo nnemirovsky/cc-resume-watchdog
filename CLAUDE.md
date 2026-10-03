@@ -11,8 +11,7 @@ stream failure. Entirely bash based.
 ## File structure
 
 ```
-.claude/
-  CLAUDE.md            # This file. Kept out of the plugin root, where it would not load anyway
+CLAUDE.md              # This file. Keep it at the root: under .claude/ the portal puts a policy hold on the plugin
 .claude-plugin/
   plugin.json          # Plugin metadata and version
   marketplace.json     # Marketplace listing metadata
