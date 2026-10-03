@@ -11,7 +11,8 @@ stream failure. Entirely bash based.
 ## File structure
 
 ```
-CLAUDE.md              # This file. Contributor notes, not loaded as plugin context
+.claude/
+  CLAUDE.md            # This file. Under .claude/ so the plugin validator does not flag it at the root
 .claude-plugin/
   plugin.json          # Plugin metadata and version
   marketplace.json     # Marketplace listing metadata
