@@ -10,5 +10,14 @@
   "repository": "https://github.com/nnemirovsky/cc-resume-watchdog",
   "documentationUrl": "https://github.com/nnemirovsky/cc-resume-watchdog#readme",
   "supportUrl": "https://github.com/nnemirovsky/cc-resume-watchdog/issues",
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "resume",
+    "auto-resume",
+    "watchdog",
+    "api-errors",
+    "stream",
+    "reliability",
+    "hooks"
+  ]
 }
