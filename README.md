@@ -135,16 +135,14 @@ real state:
 * `CC_RESUME_OWNER` is the Claude Code pid to follow. Resolved from the session
   registry when unset, and failing that the watcher follows its own parent.
 * `CC_RESUME_WINDOW` is the rate-limit window in seconds. Default 3600.
-* `CC_RESUME_STATE_DIR` is the hook's state root. Defaults to
-  `$XDG_STATE_HOME/resume-watchdog`.
-* `CC_RESUME_HB_MAX_AGE` is how many seconds a heartbeat stays trusted. Default 90.
 
 ## Limits
 
 * Covers turn death, not process death. If the CLI exits, so do the watchers, by
   design.
-* Subagent turns die the same way and are not covered. A subagent that hits this
-  returns null to its caller.
+* A subagent that dies is reported, not resumed. Its turn lives inside the parent
+  process and there is no way to inject a continue into it from outside, so the
+  parent is told the result will not arrive and has to re-dispatch the work itself.
 * Every arming event is activity-driven, so an idle session that loses its watcher
   gets no replacement until you next type or a tool runs. A watcher that is killed
   puts a replacement in the field before it goes, which covers the deaths it can
