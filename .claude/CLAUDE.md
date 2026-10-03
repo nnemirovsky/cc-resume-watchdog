@@ -11,11 +11,11 @@ stream failure. Entirely bash based.
 ## File structure
 
 ```
-CLAUDE.md              # This file. Keep it at the root: under .claude/ the portal puts a policy hold on the plugin
+.claude/
+  CLAUDE.md            # This file. Under .claude/ so the plugin validator does not flag it at the root
 .claude-plugin/
   plugin.json          # Plugin metadata and version
   marketplace.json     # Marketplace listing metadata
-  icon.png             # Listing icon. Only read on the first portal save, so changing it later does nothing
 hooks/
   hooks.json           # SessionStart, UserPromptSubmit, PostToolUse. All async+asyncRewake
   handlers/
