@@ -5,5 +5,10 @@
   "author": {
     "name": "Nikita Nemirovsky",
     "url": "https://github.com/nnemirovsky"
-  }
+  },
+  "homepage": "https://github.com/nnemirovsky/cc-resume-watchdog",
+  "repository": "https://github.com/nnemirovsky/cc-resume-watchdog",
+  "documentationUrl": "https://github.com/nnemirovsky/cc-resume-watchdog#readme",
+  "supportUrl": "https://github.com/nnemirovsky/cc-resume-watchdog/issues",
+  "license": "MIT"
 }
