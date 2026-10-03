@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh\"",
             "async": true,
             "asyncRewake": true,
             "rewakeMessage": "Resume watchdog:"
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh\"",
             "async": true,
             "asyncRewake": true,
             "rewakeMessage": "Resume watchdog:"
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/handlers/arm.sh\"",
             "async": true,
             "asyncRewake": true,
             "rewakeMessage": "Resume watchdog:"
