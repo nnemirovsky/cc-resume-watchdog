@@ -11,9 +11,12 @@ stream failure. Entirely bash based.
 ## File structure
 
 ```
+.claude/
+  CLAUDE.md            # This file. Kept out of the plugin root, where it would not load anyway
 .claude-plugin/
   plugin.json          # Plugin metadata and version
   marketplace.json     # Marketplace listing metadata
+  icon.png             # Listing icon. Only read on the first portal save, so changing it later does nothing
 hooks/
   hooks.json           # SessionStart, UserPromptSubmit, PostToolUse. All async+asyncRewake
   handlers/
@@ -22,8 +25,9 @@ bin/
   cc-resume-watch      # The watcher. Exits 2 to wake the model
 tests/
   helpers.bash         # Transcript fixture builders and a bounded watcher runner
-  arm-watchdog.bats
+  arm.bats
   resume-watch.bats
+  subagents.bats
 ```
 
 ## The mechanism, in short
@@ -49,10 +53,16 @@ Verified against 2.1.234 and 2.1.235:
 - Claude Code never reaps the detached process, which is why the watcher follows
   its owner pid out.
 
-Hooks cannot call tools, so `arm-watchdog.sh` cannot arm the monitor. It returns
-`hookSpecificOutput.additionalContext` with the call already filled in. The watcher
-touches a heartbeat file every poll and the handler stays silent while that
-heartbeat is fresh, which is what keeps the arming self-healing instead of one-shot.
+`arm.sh` claims `<state>.pid` with noclobber, so when SessionStart and
+UserPromptSubmit fire together exactly one of them wins. The winner execs into the
+watcher, which keeps the recorded pid valid. Every later arming event finds a live
+pid and exits after a `kill -0`, which is what keeps the arming self-healing instead
+of one-shot. A watcher killed while its owner is still alive spawns its own
+replacement and logs why it went to `<state>.log`.
+
+Subagent transcripts under `<transcript>/subagents/` are watched too. A background
+subagent that dies transiently cannot be resumed, so the parent gets woken to decide
+whether to re-dispatch the work.
 
 ## Detection rules
 
@@ -75,8 +85,9 @@ bats tests/*.bats
 shellcheck --severity=error bin/cc-resume-watch hooks/handlers/*.sh
 ```
 
-Tests must not touch the real `~/.claude`. Use `CC_RESUME_STATE_DIR` and
-`CC_RESUME_HEARTBEAT`.
+Tests must not touch the real `~/.claude` or state dir. Use `CC_RESUME_STATE_DIR`
+for `arm.sh`, `CC_RESUME_STATE` for the watcher, and pin `CC_RESUME_OWNER` so the
+watcher never reads the session registry.
 
 ## Commits
 
