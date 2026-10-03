@@ -19,5 +19,6 @@
     "stream",
     "reliability",
     "hooks"
-  ]
+  ],
+  "privacyPolicyUrl": "https://github.com/nnemirovsky/cc-resume-watchdog/blob/main/PRIVACY.md"
 }
