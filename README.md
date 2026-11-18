@@ -100,7 +100,13 @@ uuid and rate limited, so a tight failure loop cannot run away.
 
 ```
 /plugin marketplace add nnemirovsky/cc-resume-watchdog
-/plugin install resume-watchdog
+/plugin install resume-watchdog@resume-watchdog
+```
+
+Or in one step from a shell (Claude Code 2.1.275 or later):
+
+```
+claude plugin install resume-watchdog --marketplace nnemirovsky/cc-resume-watchdog
 ```
 
 Needs `bash`, `jq`, and a session transcript on disk. Hooks load at session start,
